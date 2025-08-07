@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
 import fetch from "node-fetch";
+import serverless from "serverless-http";
 
 dotenv.config();
 
@@ -12,28 +13,33 @@ const __dirname = path.dirname(__filename);
 const app = express();
 let latestPlan = null;
 
-// Vercel provides the base URL automatically through an environment variable.
-// It will be something like "my-app-name.vercel.app".
-// We fall back to a local URL for local testing.
-const BASE_URL = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000';
+// Load from .env
+const RELAY_TRIGGER_URL = process.env.RELAY_TRIGGER_URL;
 
+// Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve static files from the 'public' directory
-app.use(express.static(path.join(__dirname, '..', 'public')));
+// Serve static files from 'public'
+app.use(express.static(path.join(__dirname, "..", "public")));
 
-// This handles the root path to serve your index.html
+// Serve index.html at root
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+  res.sendFile(path.join(__dirname, "..", "public", "index.html"));
 });
 
+// Helper to get base URL (Vercel & local)
+const getBaseUrl = (req) =>
+  req.headers["x-forwarded-host"]
+    ? `https://${req.headers["x-forwarded-host"]}`
+    : "http://localhost:3000";
+
+// Handle /api/plan: trigger Relay with webhook
 app.post("/api/plan", async (req, res) => {
   const { name, email, business_type, location } = req.body;
+  const webhookUrl = `${getBaseUrl(req)}/api/webhook`;
 
-  // The webhook URL is now constructed dynamically based on the deployment URL
-  const webhookUrl = `${BASE_URL}/api/webhook`;
-  console.log(`Sending webhook callback to: ${webhookUrl}`);
+  console.log(`🔔 Sending webhook callback to: ${webhookUrl}`);
 
   const payload = {
     inputs: {
@@ -41,23 +47,24 @@ app.post("/api/plan", async (req, res) => {
       email,
       business_type,
       location,
-      callback_url: webhookUrl
-    }
+      callback_url: webhookUrl,
+    },
   };
 
   try {
-    await fetch(process.env.RELAY_TRIGGER_URL, {
+    await fetch(RELAY_TRIGGER_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
     res.json({ status: "Triggered" });
   } catch (error) {
-    console.error("Error triggering Relay:", error);
+    console.error("❌ Error triggering Relay:", error);
     res.status(500).json({ error: "Failed to trigger Relay" });
   }
 });
 
+// Handle Relay webhook
 app.post("/api/webhook", (req, res) => {
   const { outputs } = req.body;
 
@@ -71,6 +78,7 @@ app.post("/api/webhook", (req, res) => {
   }
 });
 
+// Polling route
 app.get("/api/check", (req, res) => {
   if (latestPlan) {
     const result = latestPlan;
@@ -81,6 +89,5 @@ app.get("/api/check", (req, res) => {
   }
 });
 
-// Vercel doesn't use app.listen(). Instead, we export the app.
-// For local development, you can run `vercel dev` which will use this export.
-export default app;
+// Export app for Vercel (no app.listen)
+export default serverless(app);
